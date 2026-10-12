@@ -43,6 +43,12 @@ function getJson(url) {
   return JSON.parse(txt);
 }
 
+// 同步延时（毫秒），用于播放地址提取失败时的重试间隔
+function sleep(ms) {
+  var start = Date.now();
+  while (Date.now() - start < ms) {}
+}
+
 // ============ 封面解密（AES-128-CBC）============
 // 源站封面为 AES 加密二进制（WebP/JPEG），密钥/IV 提取自首页 __NUXT__：
 //   imageAesKeyHex="ea19c21e85d768da4165f5964ab886b2"
@@ -368,6 +374,8 @@ var _spider = {
     var playUrls = [];
     for (var i = 0; i < eps.length; i++) {
       var ep = eps[i];
+      // 源站标记不可用（available=false）的集不加入列表，避免点开即提示未获取到资源
+      if (!ep.available) continue;
       var name = ep.title || ("第" + ep.epNo + "集");
       var url = SITE + "/drama/" + id + "/ep-" + ep.epNo + "/";
       playUrls.push(name + "$" + url);
@@ -398,16 +406,24 @@ var _spider = {
 
   // 播放：请求播放页 HTML，正则提取内嵌 contentUrl（m3u8 带签名，实时）
   play: function (flag, id) {
-    var html = get(id);
-    var m = html.match(/\/api\/v1\/cdn\/[a-z]+\/[a-zA-Z0-9-]+\/manifest\.m3u8\?[^"'\\\s]+/);
-    if (!m) {
-      // 301 跳转兜底：无尾斜杠时补斜杠再试
-      if (id.charAt(id.length - 1) !== "/") {
+    var html, m;
+    var tries = 0;
+    for (;;) {
+      html = get(id);
+      m = html.match(/\/api\/v1\/cdn\/[a-z]+\/[a-zA-Z0-9-]+\/manifest\.m3u8\?[^"'\\\s]+/);
+      if (m) break;
+      // 301 跳转兜底：无尾斜杠时补斜杠再试（仅首轮）
+      if (tries === 0 && id.charAt(id.length - 1) !== "/") {
         html = get(id + "/");
         m = html.match(/\/api\/v1\/cdn\/[a-z]+\/[a-zA-Z0-9-]+\/manifest\.m3u8\?[^"'\\\s]+/);
+        if (m) break;
       }
+      tries++;
+      // 源站 SSR 偶发不返回播放地址（限流/负载），递增间隔重试最多 3 次
+      if (tries >= 3) break;
+      sleep(2000 + tries * 1000);
     }
-    if (!m) return JSON.stringify({ parse: 0, url: "", msg: "未找到播放地址" });
+    if (!m) return JSON.stringify({ parse: 0, url: "", msg: "未找到播放地址，源站暂未返回资源，请稍后重试" });
     var url = SITE + m[0];
     return JSON.stringify({
       parse: 0,
